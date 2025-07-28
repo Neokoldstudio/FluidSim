@@ -1,4 +1,6 @@
 #include "PositionBasedFluid.h"
+#include "Eigen/src/Core/Matrix.h"
+#include "glm/common.hpp"
 #include <omp.h>
 
 namespace
@@ -88,7 +90,8 @@ void PositionBasedFluid::step(float dt)
     //
     for (Particle& p : m_particles)
     {
-
+        p.v += p.vdiff * dt;
+        p.xstar = p.x + p.v * dt;
     }
 
     updateHashGrid();
@@ -165,7 +168,9 @@ void PositionBasedFluid::step(float dt)
     #pragma omp parallel for
     for (int i = 0; i < numParticles; ++i)
     {
-
+        Particle& p = m_particles[i];
+        p.x = p.xstar; // Update the position to the intermediate position.
+        p.vdiff = -Eigen::Vector3f(0.0f, GRAVITY, 0.0f);
     }
 
     // TODO
@@ -226,7 +231,17 @@ void PositionBasedFluid::buildNeighborhood()
         //
         // Finally, for particles within distance @a radius of the current particle @a p, 
         //  add it to the list of neighbors
+    }
+}
 
+namespace {
+    // Custom clamp function for keeping the particles inside of the bouding box, assuming min and max of the aabb are in world space.
+    Eigen::Vector3f clampVec3(const Eigen::Vector3f& v, const Eigen::Vector3f& min, const Eigen::Vector3f& max) {
+        return Eigen::Vector3f(
+            std::max(min.x(), std::min(max.x(), v.x())),
+            std::max(min.y(), std::min(max.y(), v.y())),
+            std::max(min.z(), std::min(max.z(), v.z()))
+        );
     }
 }
 
@@ -241,7 +256,9 @@ void PositionBasedFluid::boxCollision()
     #pragma omp parallel for
     for (int i = 0; i < numParticles; ++i)
     {
+        Particle& p = m_particles[i];
 
+        p.xstar = clampVec3(p.xstar, aabb.min, aabb.max);
     }
 }
 

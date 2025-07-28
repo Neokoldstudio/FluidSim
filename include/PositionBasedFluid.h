@@ -5,6 +5,7 @@
 #include <vector>
 #include <list>
 
+#define GRAVITY 9.81f
 // Fluid particle.
 //
 struct Particle
