@@ -2,6 +2,7 @@
 
 #include <Eigen/Dense>
 #include <vector>
+#include <memory>
 
 namespace polyscope
 {
