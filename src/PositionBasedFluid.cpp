@@ -58,7 +58,7 @@ namespace
             return Eigen::Vector3f::Zero();
         }
 
-        // Kernel used for the 
+        // Kernel used for the denominator of the scorr coefficient Eq. 11.
         float scorr()
         {
             const float x = h2 - deltaqSq;
@@ -104,6 +104,8 @@ void PositionBasedFluid::step(float dt)
 
     const unsigned int numParticles = m_particles.size();
 
+    Kernel W(radius);
+
     for (int iter = 0; iter < maxIter; ++iter)  // density solve start.
     {
         // TODO Compute the density forces
@@ -117,27 +119,60 @@ void PositionBasedFluid::step(float dt)
             // Compute the particle density using the poly-6 kernel 
             // to integrate the mass of nearby particles.
             //
-
+            Particle &p = m_particles[i];
+            p.rho = 0.0f;
+            for (Particle* neighbor : p.N)
+            {
+                if (neighbor) // Ensure neighbor pointer is valid
+                {
+                    p.rho += W.poly6(p.xstar, neighbor->xstar); // according to Macklin and Müller, we treat the particle mass as 1.0f
+                }
+            }
 
             // TODO
             // Compute the density constraint lambda using Equation 11.
             //
+            float C_i  = (p.rho / rho0) - 1.0f;
 
+            Eigen::Vector3f sumGrad = Eigen::Vector3f::Zero();
+            float sumNrmSq = 0.0f;
+            for(Particle* neighbor : p.N) {
+                if (neighbor != &p) // k != i
+                {
+                    sumGrad += (1.0f / rho0) * W.spiky(p.xstar, neighbor->xstar);
+                    sumNrmSq += ((1.0f / rho0) * W.spiky(p.xstar, neighbor->xstar)).squaredNorm(); 
+                }
+            }
+
+            p.lambda = -C_i / (sumGrad.dot(sumGrad) + sumNrmSq + eps);
         }
 
         // TODO
         // Compute delta p position updates for all particles
         //   using Equation 12.
         //  (see lines 12-14, Algorithm 1)
-        // 
+        //
         // TODO 
         // Compute the tensile instability correction using Equation 13 
         //   and revise the code for computing delta p according to Equation 14.
         //
         #pragma omp parallel for
-        for (int i = 0; i < numParticles; ++i)
+        for(int i = 0; i < numParticles; ++i)
         {
+            Particle &p = m_particles[i];
 
+            Eigen::Vector3f dp = Eigen::Vector3f::Zero();
+            for (Particle* neighbor : p.N)
+            {
+                if (neighbor != &p) // k != i
+                {
+                    Eigen::Vector3f dq = Eigen::Vector3f(0.1*radius, 0.0f, 0.0f);
+                    float Scorr = -k_corr * pow((W.scorr()/W.poly6(dq, Eigen::Vector3f::Zero())),4);
+                    Eigen::Vector3f grad = W.spiky(p.xstar, neighbor->xstar);
+                    dp += (p.lambda + neighbor->lambda + Scorr) * grad;
+                }
+            }
+            p.dp = dp * (1.0f / rho0);
         }
 
         // TODO
@@ -147,7 +182,8 @@ void PositionBasedFluid::step(float dt)
         #pragma omp parallel for
         for (int i = 0; i < numParticles; ++i)
         {
-
+            Particle& p = m_particles[i];
+            p.xstar += p.dp; // Update the intermediate position.
         }
 
         // TODO
@@ -170,17 +206,27 @@ void PositionBasedFluid::step(float dt)
     {
         Particle& p = m_particles[i];
         p.x = p.xstar; // Update the position to the intermediate position.
+        p.v = 1/dt * (p.xstar - p.x); // Update the velocity based on the position change.
         p.vdiff = -Eigen::Vector3f(0.0f, GRAVITY, 0.0f);
     }
 
     // TODO
-    // Viscosity computaton.
+    // Viscosity computation.
     // Accumulate velocity differences between neighboring particles and store in Particle::vdiff
     //
     #pragma omp parallel for
     for (int i = 0; i < numParticles; ++i)
     {
-
+        Particle& p = m_particles[i];
+        Eigen::Vector3f velAcc = Eigen::Vector3f::Zero();
+        for (Particle* neighbor : p.N)
+        {
+            if (neighbor != &p) // k != i
+            {
+                velAcc += (neighbor->v - p.v) * W.poly6(p.xstar, neighbor->xstar);
+            }
+        }
+        p.vdiff += c * velAcc; // Scale by the viscosity coefficient.
     }
 
 }
@@ -219,18 +265,41 @@ void PositionBasedFluid::buildNeighborhood()
     {
         Particle& p = m_particles[i];
         p.N.clear();
-
         // TODO
         // Build the neighbor list for each particle.
-        // 
-        // Start by computing the cell coordinates for the current particle, 
+        //
+        // Start by computing the cell coordinates for the current particle,
         //   e.g.  m_grid.getCoordinates(p.xstar, coords);
         //
-        // Then, use the spatial hash grid to access lists of particles in nearby grid cells.
-        // Note : there are 9 grid cells 
+        // Then, use the spatial hash grid to access lists of particles in
+        // nearby grid cells. Note : there are 9 grid cells
         //
-        // Finally, for particles within distance @a radius of the current particle @a p, 
+        // Finally, for particles within distance @a radius of the current
+        // particle @a p,
         //  add it to the list of neighbors
+        int coords[3];
+        m_hashGrid.getCoordinates(p.xstar, coords);
+        for (int x = coords[0] - 1; x <= coords[0] + 1; ++x)
+        {
+            for (int y = coords[1] - 1; y <= coords[1] + 1; ++y)
+            {
+                for (int z = coords[2] - 1; z <= coords[2] + 1; ++z)
+                {
+                    int key = m_hashGrid.key(x, y, z);
+                    if (m_hashGrid.isValid(key))
+                    {
+                        auto& cellParticles = m_hashGrid(key);
+                        for (Particle* neighbor : cellParticles)
+                        {
+                            if (neighbor != &p && (p.xstar - neighbor->xstar).squaredNorm() < radius * radius)
+                            {
+                                p.N.push_back(neighbor);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
