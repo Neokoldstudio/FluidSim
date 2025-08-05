@@ -90,6 +90,7 @@ void PositionBasedFluid::step(float dt)
     //
     for (Particle& p : m_particles)
     {
+        p.vdiff = -Eigen::Vector3f(0.0f, GRAVITY, 0.0f);
         p.v += p.vdiff * dt;
         p.xstar = p.x + p.v * dt;
     }
@@ -121,6 +122,7 @@ void PositionBasedFluid::step(float dt)
             //
             Particle &p = m_particles[i];
             p.rho = 0.0f;
+            p.rho = W.poly6(p.xstar, p.xstar);
             for (Particle* neighbor : p.N)
             {
                 if (neighbor) // Ensure neighbor pointer is valid
@@ -139,12 +141,17 @@ void PositionBasedFluid::step(float dt)
             for(Particle* neighbor : p.N) {
                 if (neighbor != &p) // k != i
                 {
-                    sumGrad += (1.0f / rho0) * W.spiky(p.xstar, neighbor->xstar);
-                    sumNrmSq += ((1.0f / rho0) * W.spiky(p.xstar, neighbor->xstar)).squaredNorm(); 
+                    Eigen::Vector3f grad = (1.0f / rho0) * W.spiky(p.xstar, neighbor->xstar);
+                    sumGrad += grad;
+                    sumNrmSq += grad.squaredNorm(); 
                 }
             }
 
-            p.lambda = -C_i / (sumGrad.dot(sumGrad) + sumNrmSq + eps);
+            float denom = sumGrad.dot(sumGrad) + sumNrmSq + eps;
+            if (denom > 1e-6f)
+                p.lambda = -C_i / denom;
+            else
+                p.lambda = 0.0f;
         }
 
         // TODO
@@ -167,7 +174,12 @@ void PositionBasedFluid::step(float dt)
                 if (neighbor != &p) // k != i
                 {
                     Eigen::Vector3f dq = Eigen::Vector3f(0.1*radius, 0.0f, 0.0f);
-                    float Scorr = -k_corr * pow((W.scorr()/W.poly6(dq, Eigen::Vector3f::Zero())),4);
+					float Scorr = 0.0f;
+                    float denom = W.poly6(dq, Eigen::Vector3f::Zero());
+                    if (denom > 1e-6f)
+                        Scorr = -k_corr * std::pow(W.scorr() / denom, 4);
+                    else
+                        Scorr = 0.0f;
                     Eigen::Vector3f grad = W.spiky(p.xstar, neighbor->xstar);
                     dp += (p.lambda + neighbor->lambda + Scorr) * grad;
                 }
@@ -205,9 +217,8 @@ void PositionBasedFluid::step(float dt)
     for (int i = 0; i < numParticles; ++i)
     {
         Particle& p = m_particles[i];
-        p.x = p.xstar; // Update the position to the intermediate position.
         p.v = 1/dt * (p.xstar - p.x); // Update the velocity based on the position change.
-        p.vdiff = -Eigen::Vector3f(0.0f, GRAVITY, 0.0f);
+        p.x = p.xstar; // Update the position to the intermediate position.
     }
 
     // TODO
@@ -219,6 +230,7 @@ void PositionBasedFluid::step(float dt)
     {
         Particle& p = m_particles[i];
         Eigen::Vector3f velAcc = Eigen::Vector3f::Zero();
+
         for (Particle* neighbor : p.N)
         {
             if (neighbor != &p) // k != i
