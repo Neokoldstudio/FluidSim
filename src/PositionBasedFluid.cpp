@@ -7,6 +7,8 @@ namespace
 {
     static const float pi = (3.14159265358979323846264338327950288f);
 
+    const Eigen::Vector3f gravity(0.0f, -GRAVITY, 0.0f);
+
     // SPH kernel implementations
     //
     class Kernel
@@ -70,7 +72,7 @@ namespace
 
 PositionBasedFluid::PositionBasedFluid() : m_hashGrid(aabb.min, aabb.max, radius), m_particles(),
 rho0(6400.0f), eps(400.0f), aabb(Eigen::Vector3f(-2.0f, 0.0f, -1.0f), Eigen::Vector3f(2.0f, 2.0f, 1.0f)),
-maxIter(4), c(2e-4f), k_corr(2e-4f), radius(0.1f)
+maxIter(4), v_eps(0.001), c(2e-4f), k_corr(2e-4f), radius(0.1f)
 {
 
 }
@@ -90,8 +92,7 @@ void PositionBasedFluid::step(float dt)
     //
     for (Particle& p : m_particles)
     {
-        p.vdiff = -Eigen::Vector3f(0.0f, GRAVITY, 0.0f);
-        p.v += p.vdiff * dt;
+		p.v += gravity * dt; // Apply gravity to the velocity.
         p.xstar = p.x + p.v * dt;
     }
 
@@ -122,7 +123,6 @@ void PositionBasedFluid::step(float dt)
             //
             Particle &p = m_particles[i];
             p.rho = 0.0f;
-            p.rho = W.poly6(p.xstar, p.xstar);
             for (Particle* neighbor : p.N)
             {
                 if (neighbor) // Ensure neighbor pointer is valid
@@ -147,11 +147,7 @@ void PositionBasedFluid::step(float dt)
                 }
             }
 
-            float denom = sumGrad.dot(sumGrad) + sumNrmSq + eps;
-            if (denom > 1e-6f)
-                p.lambda = -C_i / denom;
-            else
-                p.lambda = 0.0f;
+            p.lambda = -C_i / (sumGrad.dot(sumGrad) + sumNrmSq + eps);
         }
 
         // TODO
@@ -168,23 +164,13 @@ void PositionBasedFluid::step(float dt)
         {
             Particle &p = m_particles[i];
 
-            Eigen::Vector3f dp = Eigen::Vector3f::Zero();
+            p.dp = Eigen::Vector3f::Zero();
             for (Particle* neighbor : p.N)
             {
-                if (neighbor != &p) // k != i
-                {
-                    Eigen::Vector3f dq = Eigen::Vector3f(0.1*radius, 0.0f, 0.0f);
-					float Scorr = 0.0f;
-                    float denom = W.poly6(dq, Eigen::Vector3f::Zero());
-                    if (denom > 1e-6f)
-                        Scorr = -k_corr * std::pow(W.scorr() / denom, 4);
-                    else
-                        Scorr = 0.0f;
-                    Eigen::Vector3f grad = W.spiky(p.xstar, neighbor->xstar);
-                    dp += (p.lambda + neighbor->lambda + Scorr) * grad;
-                }
+                float Scorr = -k_corr * std::pow(W.poly6(p.xstar , neighbor->xstar) / W.scorr(), 4);
+                p.dp += (p.lambda + neighbor->lambda + Scorr) * W.spiky(p.xstar, neighbor->xstar);
             }
-            p.dp = dp * (1.0f / rho0);
+            p.dp /= rho0;
         }
 
         // TODO
@@ -211,13 +197,13 @@ void PositionBasedFluid::step(float dt)
 
 
     // TODO
-    // Perform a final position update using most recent xstar.
+    // Perform a final position update using most recent xstar.z
     //
     #pragma omp parallel for
     for (int i = 0; i < numParticles; ++i)
     {
         Particle& p = m_particles[i];
-        p.v = 1/dt * (p.xstar - p.x); // Update the velocity based on the position change.
+        p.v = (p.xstar - p.x)/dt; // Update the velocity based on the position change.
         p.x = p.xstar; // Update the position to the intermediate position.
     }
 
@@ -229,18 +215,65 @@ void PositionBasedFluid::step(float dt)
     for (int i = 0; i < numParticles; ++i)
     {
         Particle& p = m_particles[i];
-        Eigen::Vector3f velAcc = Eigen::Vector3f::Zero();
+		p.vdiff = Eigen::Vector3f::Zero();
 
         for (Particle* neighbor : p.N)
         {
             if (neighbor != &p) // k != i
             {
-                velAcc += (neighbor->v - p.v) * W.poly6(p.xstar, neighbor->xstar);
+               p.vdiff += (neighbor->v - p.v) * W.poly6(p.xstar, neighbor->xstar);
             }
         }
-        p.vdiff += c * velAcc; // Scale by the viscosity coefficient.
     }
 
+    #pragma omp parallel for
+    for (int i = 0; i < numParticles; ++i)
+    {
+        Particle& p = m_particles[i];
+        p.v += c * p.vdiff;
+    }
+
+    // 1. Compute vorticity vector (curl)
+    #pragma omp parallel for
+    for (int i = 0; i < numParticles; ++i)
+    {
+        Particle& p = m_particles[i];
+        p.omega = Eigen::Vector3f::Zero();
+
+        for (Particle* neighbor : p.N)
+        {
+            if (neighbor != &p)
+            {
+                Eigen::Vector3f vij = neighbor->v - p.v;
+                p.omega += vij.cross(W.spiky(p.xstar, neighbor->xstar));
+            }
+        }
+    }
+
+    // 2. Compute vorticity gradient (η) and vorticity force
+    #pragma omp parallel for
+    for (int i = 0; i < numParticles; ++i)
+    {
+        Particle& p = m_particles[i];
+
+        Eigen::Vector3f eta = Eigen::Vector3f::Zero();
+        for (Particle* neighbor : p.N)
+        {
+            if (neighbor != &p)
+            {
+                Eigen::Vector3f grad = W.spiky(p.xstar, neighbor->xstar);
+                float w = grad.norm();
+                eta += (neighbor->omega.norm()) * grad; // Gradient of vorticity magnitude
+            }
+        }
+
+        if (eta.norm() > 1e-5)
+        {
+            Eigen::Vector3f N = eta.normalized();
+            Eigen::Vector3f fVort = v_eps * N.cross(p.omega);
+            p.v += dt * fVort;
+        }
+    }
 }
 
 void PositionBasedFluid::updateHashGrid()
@@ -303,7 +336,7 @@ void PositionBasedFluid::buildNeighborhood()
                         auto& cellParticles = m_hashGrid(key);
                         for (Particle* neighbor : cellParticles)
                         {
-                            if (neighbor != &p && (p.xstar - neighbor->xstar).squaredNorm() < radius * radius)
+                            if ((p.xstar - neighbor->xstar).squaredNorm() < radius * radius)
                             {
                                 p.N.push_back(neighbor);
                             }

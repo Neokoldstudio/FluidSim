@@ -134,6 +134,7 @@ void FluidViewer::drawGUI()
     ImGui::SliderFloat("Kernel radius (h)", &m_pbf->radius, 0.01, 1.0f, "%1.3f");
     ImGui::SliderInt("Density iterations", &m_pbf->maxIter, 1, 100);
     ImGui::SliderFloat("Rest density (rho)", &m_pbf->rho0, 100.0f, sMaxDensity, "%5.1f");
+    ImGui::SliderFloat("Vorticity Epsilon", &m_pbf->v_eps, 0.001f, 0.1f, "%0.5f");
     ImGui::SliderFloat("Artifical viscosity (c)", &m_pbf->c, 0.0f, 2e-4f, "%0.5f");
     ImGui::SliderFloat("Artificial pressure strength (k)", &m_pbf->k_corr, 0.0f, 1.0f, "%0.4f");
     ImGui::PopItemWidth();

@@ -27,6 +27,7 @@ struct Particle
     Eigen::Vector3f xstar;      // Intermediate position
     Eigen::Vector3f dp;         // Position update
     Eigen::Vector3f vdiff;      // Velocity difference
+	Eigen::Vector3f omega;  // Vorticity
     float lambda;               // Density "force"
     float rho;                  // Fluid density at the particle
 
@@ -50,6 +51,7 @@ public:
     AABB aabb;          // Axis-aligned bounding box used for collision handling.
     int maxIter;        // Density solve iterations.
     float c;            // Viscosity coefficient.
+	float v_eps;        // Vorticity Epsilon.
     float k_corr;       // Strength of tension correction force. 
     float radius;       // Kernel radius.
 
@@ -72,5 +74,4 @@ private:
 
     std::vector<Particle> m_particles;
     HashGrid3d<Particle*> m_hashGrid;
-
 };
